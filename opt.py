@@ -12,8 +12,8 @@ import sys
 from datetime import datetime
 from hud_manager import HUDManager
 
-# ---------------------------
-# --- Заглушки / безпечні імпорти ---
+# -----------------------------------------
+# --- Заглушки / безпечні імпорти -----------
 # ---------------------------
 # Якщо у тебе є реальні модулі ldtest, hud_manager, hls_player, wifi_hotspot — вони будуть імпортовані.
 # Якщо ні — використовуються прості заглушки, щоб код можна було запустити.
@@ -22,7 +22,7 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    print("⚠️  Pillow не встановлено. Українські літери в HUD не будуть відображатись.")
+    print("⚠️  Pillow не встановлено. Українські літери в HUD не будуть відображатись. ")
 
 try:
     from ldtest import LRF
