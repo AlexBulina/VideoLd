@@ -1,0 +1,19 @@
+[
+  {
+    "name": "Norvegian logistics port",
+    "url": "http://109.247.15.178:6001/mjpg/video.mjpg"
+  },
+  {
+    "name": "beach",
+    "url": "http://85.196.146.82:3337/mjpg/video.mjpg"}
+    ,
+  
+   { "name": "boats club",
+    "url": "http://213.236.250.78/mjpg/video.mjpg"
+    },
+    {
+      "name": "Nature",
+      "url": "http://77.223.163.176:8083/mjpg/video.mjpg"
+      }
+
+]
