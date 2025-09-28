@@ -27,8 +27,10 @@ class MotionDetector:
         """
         Виявляє рух на поточному кадрі та малює прямокутники навколо рухомих об'єктів.
 
-        :param frame: Вхідний кадр для аналізу.
-        :return: Кадр з намальованими прямокутниками навколо виявлених об'єктів.
+        :param frame: Вхідний кадр для аналізу. 
+        :return: Кортеж (frame, motion_detected), де:
+                 - frame: кадр з намальованими прямокутниками.
+                 - motion_detected: True, якщо рух було виявлено, інакше False.
         """
         # 1. Зменшуємо кадр для прискорення обробки.
         height, width = frame.shape[:2]
@@ -50,6 +52,8 @@ class MotionDetector:
         # Контури - це безперервні криві, що окреслюють об'єкти.
         contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+        motion_detected = False
+
         # 4. Ітеруємо по знайдених контурах.
         for contour in contours:
             # 5. Якщо площа контуру занадто мала, ігноруємо його (це, ймовірно, шум).
@@ -61,8 +65,9 @@ class MotionDetector:
             # 7. Масштабуємо координати назад до розміру оригінального кадру.
             x, y, w, h = int(x / self.scale_factor), int(y / self.scale_factor), int(w / self.scale_factor), int(h / self.scale_factor)
             cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 255), 2)
+            motion_detected = True
 
-        return frame
+        return frame, motion_detected
 
     def reset(self):
         """Скидає стан віднімача фону."""

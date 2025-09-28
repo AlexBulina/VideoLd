@@ -210,6 +210,9 @@ motion_detector = MotionDetector(
 # Ініціалізація аудіоплеєра
 audio_player = AudioPlayer("/home/laserlab/LD_PROJECT/alarm-clock-beep-1_zjgin-vd.mp3")
 
+# Ініціалізація аудіоплеєра
+audio_player_ondetect = AudioPlayer("/home/laserlab/LD_PROJECT/audio-editor-output.mp3")
+
 # Video playback
 video_playing = False
 video_cap = None
@@ -798,8 +801,10 @@ try:
         # Motion Detection
         frame_count += 1
         if motion_detection_active and current_cam_idx != 2 and frame_count % MOTION_DETECT_FRAME_SKIP == 0:
-            frame = motion_detector.detect(frame)
-
+            frame, motion_found = motion_detector.detect(frame)
+            if motion_found:
+                # Ось тут ми відтворюємо звук!
+                audio_player_ondetect.play()
 
         # Crosshair
         if show_crosshair:
