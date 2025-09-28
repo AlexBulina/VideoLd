@@ -125,7 +125,8 @@ def load_hls_streams(filename=STREAMS_JSON):
         with open(filename, "r", encoding="utf-8") as f:
             streams = json.load(f)
             # Фільтруємо тільки валідні записи
-            streams = [s for s in streams if isinstance(s, dict) and "url" in s and "name" in s]
+            valid_streams = [s for s in streams if isinstance(s, dict) and "url" in s and "name" in s]
+            streams = valid_streams[:8]  # Беремо тільки перші 8 стрімів
             return streams
     except Exception as e:
         print("Помилка читання streams.json:", e)
@@ -733,17 +734,26 @@ try:
 
             # Спеціальна обробка для недоступних HLS стрімів
             if current_cam_idx == 2 and hls_streams:
-                print(f"⚠️ HLS стрім '{hls_streams[current_hls_idx]['name']}' недоступний.")
-                hud.show_message("Stream unavailable, switching...")
-
-                # Спробуємо перемкнутись на наступний HLS стрім
-                next_hls_idx = (current_hls_idx + 1) % len(hls_streams)
-                switch_hls_stream(next_hls_idx) # Ця функція оновить `cap`
-
-                # Якщо і новий стрім не відкрився, перемикаємо камеру
-                if not cap or (hasattr(cap, "isOpened") and not cap.isOpened()):
-                    hud.show_message("All HLS streams failed, switching camera")
-                    switch_camera()
+                initial_hls_idx = current_hls_idx
+                switched = False
+                for i in range(len(hls_streams)):
+                    next_idx = (initial_hls_idx + 1 + i) % len(hls_streams)
+                    
+                    print(f"⚠️ HLS стрім '{hls_streams[current_hls_idx]['name']}' недоступний. Спроба переключення на '{hls_streams[next_idx]['name']}'...")
+                    hud.show_message(f"Stream unavailable, trying next...")
+                    
+                    switch_hls_stream(next_idx) # Ця функція оновить `cap`
+                    
+                    # Перевіряємо, чи відкрився новий стрім
+                    if cap and hasattr(cap, "isOpened") and cap.isOpened():
+                        ret, frame = cap.read()
+                        if ret and frame is not None:
+                            switched = True
+                            break # Знайшли робочий стрім, виходимо з циклу
+                
+                if not switched:
+                     hud.show_message("All HLS streams failed, switching camera")
+                     switch_camera()
             else:
                 # Обробка для інших камер (CSI/USB)
                 cam_name = camera_labels[current_cam_idx]

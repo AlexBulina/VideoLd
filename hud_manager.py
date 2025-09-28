@@ -65,10 +65,12 @@ class HUDManager:
             rect_h = 60
             y1, y2 = h - rect_h, h
 
-            # чорний прямокутник по всій ширині
+            # Відступ зліва, щоб не перекривати кнопки
+            left_offset = 170  # Ширина колонки кнопок (150) + невеликий відступ
+
             cv2.rectangle(
                 overlay,
-                (0, y1),
+                (left_offset, y1),
                 (w, y2),
                 (0, 0, 0),
                 -1
@@ -78,7 +80,8 @@ class HUDManager:
             # --- Центрування тексту ---
             text_w, text_h = self._get_text_size_pil(self.message)
 
-            text_x = (w - text_w) // 2
+            # Центруємо текст у межах нової, звуженої області
+            text_x = left_offset + (w - left_offset - text_w) // 2
             text_y = y1 + (rect_h - text_h) // 2
 
             frame = self._draw_text_pil(
