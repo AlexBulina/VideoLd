@@ -9,8 +9,10 @@ import math
 import os
 import json
 import sys
+from audio_player import AudioPlayer
 from datetime import datetime
 from hud_manager import HUDManager
+from motion_detector import MotionDetector
 
 # ---------------------------
 # --- Заглушки / безпечні імпорти ---
@@ -181,6 +183,7 @@ show_crosshair = False
 zoom = 1.0
 continuous_measure = False
 continuous_start_time = None
+motion_detection_active = False
 enhance_active = False
 recording = False
 video_writer = None
@@ -191,6 +194,20 @@ menu_files = []
 continuous_off_msg = ""
 button_sets = {}
 button_pressed = {}
+
+# Лічильник кадрів для оптимізації
+frame_count = 0
+MOTION_DETECT_FRAME_SKIP = 5 # Аналізувати кожен 5-й кадр
+
+# Детектор руху
+motion_detector = MotionDetector(
+    min_contour_area=300,   # Збільшено з 100. Ігноруємо дрібні об'єкти.
+    scale_factor=0.6,       # Аналізуємо зменшений кадр для швидкості.
+    var_threshold=700       # Збільшено з 50. Робить детектор менш чутливим до змін освітлення.
+)
+
+# Ініціалізація аудіоплеєра
+audio_player = AudioPlayer("/home/laserlab/LD_PROJECT/alarm-clock-beep-1_zjgin-vd.mp3")
 
 # Video playback
 video_playing = False
@@ -212,10 +229,6 @@ close_x = close_y = close_w = close_h = 0
 
 # Blink start
 blink_start_time = time.time()
-
-# Stream unavailable
-stream_unavailable_time = None
-warning_start_time = None
 
 # --- Функції для камер / HLS ---
 def open_camera(index):
@@ -330,7 +343,8 @@ create_button_set("HUD", {
     "continuous_measure": (10, 310, 150, 50, "Cont. Measure"),
     "enhance": (10, 370, 150, 50, "Enhance"),
     "record": (10, 430, 150, 50, "Record"),
-    "play": (10, 490, 150, 50, "Play")
+    "play": (10, 490, 150, 50, "Play"),
+    "motion_detect": (10, 550, 150, 50, "Motion Detect")
 })
 
 def update_switch_cam_label():
@@ -435,6 +449,13 @@ def do_single_measure():
 
 def switch_camera():
     global current_cam_idx, cap, hud
+    global current_cam_idx, cap, hud, motion_detection_active
+
+    if motion_detection_active:
+        motion_detection_active = False
+        hud.show_message("Motion Detection OFF (camera switched)")
+
+    motion_detector.reset() # Скидаємо детектор при зміні камери
     
     previous_cam_idx = current_cam_idx
     
@@ -457,7 +478,14 @@ def switch_camera():
 # --- HLS stream switching ---
 def switch_hls_stream(index):
     global current_hls_idx, cap, device_list
+    global current_hls_idx, cap, device_list, motion_detection_active
+
+    if motion_detection_active:
+        motion_detection_active = False
+        hud.show_message("Motion Detection OFF (stream switched)")
+
     if index < 0 or index >= len(hls_streams):
+        motion_detector.reset() # Скидаємо детектор при зміні стріму
         return
     current_hls_idx = index
     # Оновлюємо device_list[2] на новий URL (на випадок, якщо іншими місцями звертаємось)
@@ -494,7 +522,7 @@ def menu_button_callback(name):
 
 def button_callback(name, pressed, current_set):
     global show_crosshair, zoom, recording, enhance_active, continuous_measure, continuous_start_time
-    global lrf_powered, distance_text, video_playing
+    global lrf_powered, distance_text, video_playing, motion_detection_active
     if not pressed:
         return
 
@@ -516,10 +544,9 @@ def button_callback(name, pressed, current_set):
                 distance_text = f"Distance: {result:.1f} m" if result else "Distance: N/A"
                 print("Приціл увімкнено, далекомір запущено")
             else:
-                if lrf_powered:
-                    lrf_sensor.power_off()
-                    lrf_powered = False
-                    distance_text = "Distance: N/A"
+                lrf_sensor.power_off()
+                lrf_powered = False
+                distance_text = "Distance: N/A"
                 print("Приціл вимкнено, далекомір зупинено")
         elif name == "zoom_in":
             global zoom
@@ -554,8 +581,18 @@ def button_callback(name, pressed, current_set):
         elif name == "play":
             refresh_menu_buttons()
             set_active_button_set("Menu")
+        elif name == "motion_detect":
+            motion_detection_active = not motion_detection_active
+            if motion_detection_active:
+                motion_detector.reset() # Скидаємо стан при активації
+                hud.show_message("Motion Detection ON")
+                audio_player.play()
         elif name == "exit":
             if lrf_powered:
+                try:
+                    audio_player.stop()
+                except:
+                    pass
                 lrf_sensor.power_off()
             sys.exit(0)
 
@@ -564,7 +601,7 @@ def mouse_event(event, x, y, flags, param):
     global mouse_pressed_name, mouse_pressed_rect, mouse_pressed_set, video_playing
     global close_x, close_y, close_w, close_h
 
-    # Якщо відтворюється відео — кнопка Close
+   # Якщо відтворюється відео — кнопка Close
     if video_playing and video_cap:
         if event == cv2.EVENT_LBUTTONUP:
             if close_x <= x <= close_x + close_w and close_y <= y <= close_y + close_h:
@@ -748,6 +785,12 @@ try:
         if enhance_active:
             frame = enhance_image(frame)
 
+        # Motion Detection
+        frame_count += 1
+        if motion_detection_active and current_cam_idx != 2 and frame_count % MOTION_DETECT_FRAME_SKIP == 0:
+            frame = motion_detector.detect(frame)
+
+
         # Crosshair
         if show_crosshair:
             cv2.line(frame, (center_x-20, center_y), (center_x+20, center_y), (0,0,255),2)
@@ -760,7 +803,7 @@ try:
 
         # HUD overlay
         overlay = frame.copy()
-        rect_w, rect_h = 300, 260
+        rect_w, rect_h = 300, 280
         rect_x, rect_y = w - rect_w - 10, 10
         cv2.rectangle(overlay, (rect_x, rect_y), (rect_x+rect_w, rect_y+rect_h), (50,50,50), -1)
         frame = cv2.addWeighted(overlay, 0.5, frame, 0.5, 0)
@@ -773,29 +816,19 @@ try:
             frame = draw_text_pil(frame, "Режим стрімінгу", (rect_x+10, line_y - 15), FONT_STREAM_MODE, (255,0,0))
             
         else:
-            cv2.putText(frame, distance_text, (rect_x+10, line_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
             frame = draw_text_pil(frame, distance_text, (rect_x+10, line_y - 15), FONT_HUD_LARGE)
             if continuous_measure and int(time.time()*2) % 2 == 0:
                 cv2.circle(frame, (rect_x+250, line_y-10), 8, (0,255,0), -1)
             line_y += 30
-            cv2.putText(frame, f"Resolution: {FRAME_W}x{FRAME_H}", (rect_x+10, line_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
             frame = draw_text_pil(frame, f"Роздільність: {FRAME_W}x{FRAME_H}", (rect_x+10, line_y - 15), FONT_HUD)
             if zoom > 1.0:
                 line_y += 30
-                cv2.putText(frame, f"Zoom: {zoom:.2f}x", (rect_x+10, line_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
                 frame = draw_text_pil(frame, f"Зум: {zoom:.2f}x", (rect_x+10, line_y - 15), FONT_HUD)
             if recording:
                 line_y += 30
-                cv2.putText(frame, "REC", (rect_x+10, line_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
                 frame = draw_text_pil(frame, "ЗАПИС", (rect_x+10, line_y - 15), FONT_HUD, (0,0,255))
             if continuous_off_msg:
                 line_y += 30
-                cv2.putText(frame, continuous_off_msg, (rect_x+10, line_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,200,255), 2)
                 frame = draw_text_pil(frame, continuous_off_msg, (rect_x+10, line_y - 15), FONT_HUD, (0,200,255))
 
         # Draw HUD buttons
@@ -834,7 +867,8 @@ try:
                     is_active_state = (
                         (name == "enhance" and enhance_active) or
                         (name == "record" and recording) or
-                        (name == "continuous_measure" and continuous_measure)
+                        (name == "continuous_measure" and continuous_measure) or
+                        (name == "motion_detect" and motion_detection_active)
                     )
                     color = (0, 150, 0) if (active or is_active_state) else (0, 100, 200)
                 cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), color, -1)
@@ -865,6 +899,7 @@ try:
     if video_cap:
         video_cap.release()
     if cap:
+
         cap.release()
 except Exception:
     pass
