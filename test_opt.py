@@ -139,8 +139,8 @@ def load_hls_streams(filename=STREAMS_JSON):
 hotspot = WifiHotspotServer(ssid="PiLdVideo", password="video1234", folder="download", port=8000)
 
 lrf_sensor = LRF(port='/dev/ttyAMA0', enable_pin=17, mode=LRF.SINGLE)
-lrf_sensor.power_on()  # на старті можемо включити, або керувати пізніше
-lrf_powered = True
+# lrf_sensor.power_on() # живлення тепер керується автоматично
+lrf_powered = False # Початково вимкнено
 
 # --- Шрифти для HUD ---
 FONT_PATH = "/home/laserlab/LD_PROJECT/DejaVuSans.ttf"
@@ -199,6 +199,9 @@ button_pressed = {}
 # Лічильник кадрів для оптимізації
 frame_count = 0
 MOTION_DETECT_FRAME_SKIP = 5 # Аналізувати кожен 5-й кадр
+
+# Поріг яскравості для детекції на тепловій камері (0-255)
+THERMAL_DETECTION_THRESHOLD = 200
 
 # Детектор руху
 motion_detector = MotionDetector(
@@ -438,6 +441,11 @@ def stop_video():
 
 # --- Measures / camera switching ---
 def do_single_measure():
+    global hud
+    if not lrf_sensor.is_available:
+        hud.show_message("Помилка: далекомір недоступний")
+        return
+
     global distance_text, lrf_powered
     if not lrf_powered:
         lrf_sensor.power_on()
@@ -563,11 +571,18 @@ def button_callback(name, pressed, current_set):
             if continuous_measure:
                 hud.show_message("Спочатку зупиніть безперервне вимірювання")
                 return
+            if not lrf_sensor.is_available:
+                hud.show_message("Помилка: далекомір недоступний")
+                hud.show_message("Спочатку зупиніть безперервне вимірювання")
+                return
             if not show_crosshair:
                 hud.show_message("Спочатку увімкніть приціл")
                 return
             do_single_measure()
         elif name == "continuous_measure":
+            if not lrf_sensor.is_available:
+                hud.show_message("Помилка: далекомір недоступний")
+                return
             if not show_crosshair:
                 hud.show_message("Спочатку увімкніть приціл")
                 return
@@ -798,12 +813,58 @@ try:
         if enhance_active:
             frame = enhance_image(frame)
 
+        # Heatmap for Thermal Camera (when motion detection is on)
+        if motion_detection_active and current_cam_idx == 1:
+            # Припускаємо, що кадр з термокамери - відтінки сірого (навіть якщо у форматі BGR)
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame = cv2.applyColorMap(gray_frame, cv2.COLORMAP_JET)
+
+            # --- Малюємо шкалу температури (кольорову смугу) ---
+            bar_h = 200
+            bar_w = 25
+            # Координати головного HUD
+            hud_rect_x = w - 300 - 10
+            hud_rect_y = 10
+            # Розміщуємо шкалу всередині HUD, справа, з відступом 10px
+            bar_x = hud_rect_x + 300 - bar_w - 10
+            bar_y = hud_rect_y + (280 - bar_h) // 2 # Вертикально по центру HUD
+
+            # Створюємо градієнт від 255 до 0 (гарячий -> холодний)
+            gradient = np.arange(255, 0, -1, dtype=np.uint8).reshape(-1, 1)
+            
+            # Застосовуємо ту ж саму кольорову карту
+            colorbar_img = cv2.applyColorMap(gradient, cv2.COLORMAP_JET)
+            
+            # Змінюємо розмір до потрібного на екрані
+            colorbar_img = cv2.resize(colorbar_img, (bar_w, bar_h))
+
+            # Накладаємо шкалу на основний кадр
+            frame[bar_y:bar_y+bar_h, bar_x:bar_x+bar_w] = colorbar_img
+            frame = draw_text_pil(frame, "    Гар", (bar_x - 25, bar_y - 20), FONT_HUD, (255, 255, 255))
+            frame = draw_text_pil(frame, "    Хол", (bar_x - 30, bar_y + bar_h + 5), FONT_HUD, (255, 255, 255))
+ 
         # Motion Detection
         frame_count += 1
         if motion_detection_active and current_cam_idx != 2 and frame_count % MOTION_DETECT_FRAME_SKIP == 0:
-            frame, motion_found = motion_detector.detect(frame)
+            frame_for_detection = frame.copy() # Працюємо з копією, щоб не змінювати оригінал
+
+            # Якщо це теплова камера, застосовуємо поріг "теплоти"
+            if current_cam_idx == 1:
+                gray = cv2.cvtColor(frame_for_detection, cv2.COLOR_BGR2GRAY)
+                
+                # Адаптивний поріг: розраховуємо середню яскравість і додаємо зміщення.
+                # Це робить систему стійкою до загальних змін температури фону.
+                avg_brightness = np.mean(gray)
+                adaptive_threshold = min(avg_brightness + 50, 254) # Додаємо 40 до середнього, але не більше 254
+                
+                # Створюємо маску, де пікселі яскравіші за адаптивний поріг - білі
+                _, mask = cv2.threshold(gray, adaptive_threshold, 255, cv2.THRESH_BINARY)
+                # Залишаємо на кадрі тільки "гарячі" області
+                frame_for_detection = cv2.bitwise_and(frame_for_detection, frame_for_detection, mask=mask)
+
+            # Детектуємо на підготовленому кадрі, а малюємо на оригінальному 'frame'
+            frame, motion_found = motion_detector.detect_and_draw(frame_for_detection, frame)
             if motion_found:
-                # Ось тут ми відтворюємо звук!
                 audio_player_ondetect.play()
 
         # Crosshair
@@ -856,10 +917,17 @@ try:
                 active = button_pressed.get(name, False)
 
                 # Блокування кнопок при HLS режимі
-                if current_cam_idx == 2 and name != "switch_cam":
-                    color = (80, 80, 80)
+                is_hls_and_not_switch = current_cam_idx == 2 and name != "switch_cam"
+                if is_hls_and_not_switch:
                     if mouse_pressed_name == name:
                         hud.show_message("Кнопка вимкнена в режимі HLS")
+                    color = (80, 80, 80) # Встановлюємо сірий колір для заблокованих кнопок
+                
+                elif name in ["single_measure", "continuous_measure", "crosshair"] and not lrf_sensor.is_available:
+                    color = (80, 80, 80) # Сірий колір, якщо далекомір недоступний
+                    if mouse_pressed_name == name:
+                        hud.show_message("Далекомір недоступний")
+
 
                 elif (name == "crosshair" or name == "single_measure") and continuous_measure:
                     color = (80, 80, 80)
@@ -870,6 +938,7 @@ try:
                     color = (80, 80, 80)
                     if mouse_pressed_name == name:
                         hud.show_message("Спочатку увімкніть приціл")
+                
 
                 elif name == "switch_cam" and current_cam_idx == 2:
                     t = time.time() - blink_start_time

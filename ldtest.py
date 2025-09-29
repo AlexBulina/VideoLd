@@ -11,6 +11,8 @@ class LRF:
         self.port = port
         self.enable_pin = enable_pin
         self.mode = mode
+        self.ser = None
+        self.is_available = False
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(self.enable_pin, GPIO.OUT)
@@ -24,17 +26,26 @@ class LRF:
                 stopbits=serial.STOPBITS_ONE,
                 timeout=2
             )
+            self.is_available = True
         except serial.SerialException as e:
             print(f"Помилка: Не вдалося відкрити порт {self.port}. {e}")
             print("Перевірте, чи правильно налаштовано UART в 'sudo raspi-config'.")
-            GPIO.cleanup()
-            exit()
+            # Не завершуємо програму, просто позначаємо як недоступний
 
-        print(f"LRF ініціалізовано на порту {self.port} з піном живлення {self.enable_pin}.")
+        if self.is_available:
+            print(f"LRF ініціалізовано на порту {self.port} з піном живлення {self.enable_pin}.")
+        else:
+            print(f"⚠️  LRF на порту {self.port} не вдалося ініціалізувати. Функції вимірювання будуть недоступні.")
+        
+        self.check_availability()
 
     # --- Живлення ---
     def power_on(self):
         """Вмикає живлення модуля."""
+        if not self.is_available:
+            print("LRF недоступний, живлення не вмикається.")
+            return
+
         print("Вмикання модуля...")
         GPIO.output(self.enable_pin, GPIO.HIGH)
         time.sleep(0.3)  # Затримка >200 мс
@@ -55,6 +66,9 @@ class LRF:
 
     def _send_command(self, command_code, data_bytes=b'\xFF\xFF\xFF\xFF'):
         """Формує та відправляє команду на модуль."""
+        if not self.is_available or not self.ser:
+            return
+
         frame_header = b'\x55\xAA'
         command_payload = bytes([command_code]) + data_bytes
         checksum = self._calculate_checksum(command_payload)
@@ -63,6 +77,9 @@ class LRF:
 
     def _read_response(self):
         """Читає та перевіряє 8-байтову відповідь від модуля."""
+        if not self.is_available or not self.ser:
+            return None
+
         response = self.ser.read(8)
         if len(response) != 8:
             return None
@@ -84,11 +101,41 @@ class LRF:
 
         return response
 
+    def check_availability(self):
+        """
+        Перевіряє доступність модуля, намагаючись виконати одне вимірювання.
+        Вважає модуль доступним, якщо отримано відповідь, навіть з неправильною CRC.
+        """
+        if not self.is_available:
+            return
+
+        print("Перевірка доступності далекоміра...")
+        self.power_on()
+        time.sleep(0.3)
+
+        self._send_command(0x88)  # Команда одиночного вимірювання
+        response = self.ser.read(8) # Читаємо відповідь
+
+        self.power_off() # Вимикаємо після перевірки
+
+        if response and len(response) == 8 and response[0:2] == b'\x55\xAA':
+            # Якщо отримали заголовок і 8 байт, вважаємо, що пристрій на зв'язку
+            self.is_available = True
+            print("✅ Далекомір доступний і відповідає.")
+        else:
+            self.is_available = False
+            print("❌ Помилка: далекомір не відповів на команду. Перевірте підключення.")
+            print("   Функції вимірювання будуть недоступні.")
+
+
     # --- Одиночне вимірювання ---
     def get_single_measurement(self):
         """
         Виконує одиночне вимірювання та повертає дистанцію (мін, макс) у метрах.
         """
+        if not self.is_available:
+            return None
+
         self._send_command(0x88)  # команда одиночного вимірювання
         response = self._read_response()
 
@@ -114,6 +161,7 @@ class LRF:
     # --- Безперервне вимірювання ---
     def start_continuous_measurement(self):
         """Запускає безперервний режим вимірювань на пристрої."""
+        if not self.is_available: return
         self._send_command(0x89)
         resp = self._read_response() # Читаємо відповідь, щоб очистити буфер
         if resp and resp[2] == 0x89:
@@ -121,6 +169,7 @@ class LRF:
 
     def stop_continuous_measurement(self):
         """Зупиняє безперервний режим вимірювань."""
+        if not self.is_available: return
         self._send_command(0x8E)
         resp = self._read_response()
         if resp and resp[2] == 0x8E:
@@ -129,7 +178,7 @@ class LRF:
     # --- Закриття ---
     def close(self):
         """Закриває серійний порт та очищує GPIO."""
-        if self.ser.is_open:
+        if self.ser and self.ser.is_open:
             self.ser.close()
         self.power_off()
         GPIO.cleanup()

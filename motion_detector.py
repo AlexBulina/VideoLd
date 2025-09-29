@@ -1,4 +1,5 @@
 import cv2
+import numpy as np
 
 class MotionDetector:
     """
@@ -27,20 +28,16 @@ class MotionDetector:
         """
         Виявляє рух на поточному кадрі та малює прямокутники навколо рухомих об'єктів.
 
-        :param frame: Вхідний кадр для аналізу. 
+        :param frame: Вхідний кадр для аналізу.
         :return: Кортеж (frame, motion_detected), де:
                  - frame: кадр з намальованими прямокутниками.
                  - motion_detected: True, якщо рух було виявлено, інакше False.
         """
         # 1. Зменшуємо кадр для прискорення обробки.
         height, width = frame.shape[:2]
-        resized_frame = cv2.resize(
-            frame, 
-            (int(width * self.scale_factor), int(height * self.scale_factor)), 
-            interpolation=cv2.INTER_AREA
-        )
+        resized_frame = cv2.resize(frame, (0, 0), fx=self.scale_factor, fy=self.scale_factor, interpolation=cv2.INTER_AREA)
 
-        # 2. (Новий крок) Застосовуємо розмиття для зменшення шуму і підвищення продуктивності.
+        # 2. Застосовуємо розмиття для зменшення шуму і підвищення продуктивності.
         # Це допомагає віднімачу фону генерувати менше помилкових контурів.
         blurred_frame = cv2.GaussianBlur(resized_frame, (5, 5), 0)
 
@@ -48,6 +45,12 @@ class MotionDetector:
         # Маска буде білою там, де є рух, і чорною, де його немає.
         fgMask = self.backSub.apply(blurred_frame)
 
+        # 3.1. Очищення маски від шуму за допомогою морфологічних операцій.
+        # MORPH_OPEN видаляє дрібні білі "шуми".
+        # MORPH_CLOSE заповнює "дірки" всередині об'єктів.
+        kernel = np.ones((5, 5), np.uint8)
+        fgMask = cv2.morphologyEx(fgMask, cv2.MORPH_OPEN, kernel, iterations=1)
+        fgMask = cv2.morphologyEx(fgMask, cv2.MORPH_CLOSE, kernel, iterations=2)
         # 4. Знаходимо контури на масці руху.
         # Контури - це безперервні криві, що окреслюють об'єкти.
         contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -68,6 +71,49 @@ class MotionDetector:
             motion_detected = True
 
         return frame, motion_detected
+
+    def detect_and_draw(self, frame_for_detection, frame_to_draw_on):
+        """
+        Виявляє рух на 'frame_for_detection', але малює прямокутники на 'frame_to_draw_on'.
+        Це дозволяє аналізувати модифікований кадр (напр. з порогом), а малювати на оригінальному.
+
+        :param frame_for_detection: Вхідний кадр для аналізу.
+        :param frame_to_draw_on: Кадр, на якому будуть намальовані прямокутники.
+        :return: Кортеж (frame_to_draw_on, motion_detected), де:
+                 - frame_to_draw_on: кадр з намальованими прямокутниками.
+                 - motion_detected: True, якщо рух було виявлено, інакше False.
+        """
+        # 1. Зменшуємо кадр для аналізу.
+        resized_frame = cv2.resize(frame_for_detection, (0, 0), fx=self.scale_factor, fy=self.scale_factor, interpolation=cv2.INTER_AREA)
+
+        # 2. Розмиття для зменшення шуму.
+        blurred_frame = cv2.GaussianBlur(resized_frame, (5, 5), 0)
+
+        # 3. Отримуємо "маску" руху.
+        fgMask = self.backSub.apply(blurred_frame)
+
+        # 3.1. Очищення маски від шуму за допомогою морфологічних операцій.
+        kernel = np.ones((5, 5), np.uint8)
+        fgMask = cv2.morphologyEx(fgMask, cv2.MORPH_OPEN, kernel, iterations=1)
+        fgMask = cv2.morphologyEx(fgMask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        # 4. Знаходимо контури.
+        contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        motion_detected = False
+
+        for contour in contours:
+            if cv2.contourArea(contour) < self.min_contour_area:
+                continue
+
+            # Отримуємо координати та масштабуємо їх до розміру оригінального кадру.
+            (x, y, w, h) = cv2.boundingRect(contour)
+            x, y, w, h = int(x / self.scale_factor), int(y / self.scale_factor), int(w / self.scale_factor), int(h / self.scale_factor)
+            # Малюємо на кадрі 'frame_to_draw_on'.
+            cv2.rectangle(frame_to_draw_on, (x, y), (x+w, y+h), (0, 255, 255), 2)
+            motion_detected = True
+
+        return frame_to_draw_on, motion_detected
 
     def reset(self):
         """Скидає стан віднімача фону."""
